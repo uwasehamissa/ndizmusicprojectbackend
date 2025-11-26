@@ -104,13 +104,6 @@ const login = async (req, res) => {
       });
     }
 
-    if (!user.isVerified) {
-      return res.status(401).json({
-        success: false,
-        message: 'Please verify your email before logging in'
-      });
-    }
-
     const token = generateToken(user._id);
 
     // Update last login
