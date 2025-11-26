@@ -2,62 +2,67 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const validator = require('validator');
 
-const userSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: [true, 'Name is required'],
-    trim: true,
-    maxlength: [50, 'Name cannot be more than 50 characters']
+const userSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      required: [true, 'Name is required'],
+      trim: true,
+      maxlength: [50, 'Name cannot be more than 50 characters'],
+    },
+    email: {
+      type: String,
+      required: [true, 'Email is required'],
+      unique: true,
+      lowercase: true,
+      validate: [validator.isEmail, 'Please provide a valid email'],
+    },
+    password: {
+      type: String,
+      required: [true, 'Password is required'],
+      minlength: [6, 'Password must be at least 6 characters'],
+      select: false, // don't return password by default
+    },
+    status: {
+      type: String,
+      enum: ['user', 'admin'],
+      default: 'user',
+    },
+    isVerified: {
+      type: Boolean,
+      default: false,
+    },
+    lastLogin: {
+      type: Date,
+    },
+    verificationToken: String,
+    resetPasswordToken: String,
+    resetPasswordExpire: Date,
   },
-  email: {
-    type: String,
-    required: [true, 'Email is required'],
-    unique: true,
-    lowercase: true,
-    validate: [validator.isEmail, 'Please provide a valid email']
-  },
-  password: {
-    type: String,
-    required: [true, 'Password is required'],
-    minlength: [6, 'Password must be at least 6 characters'],
-    select: false
-  },
-  status: {
-    type: String,
-    enum: ['user', 'admin'],
-    default: 'user'
-  },
-  isVerified: {
-    type: Boolean,
-    default: false
-  },
-  lastLogin: {
-    type: Date
-  },
-  verificationToken: String,
-  resetPasswordToken: String,
-  resetPasswordExpire: Date
-}, {
-  timestamps: true
-});
+  { timestamps: true }
+);
 
-// Password hashing middleware
+// Hash password before saving
 userSchema.pre('save', async function (next) {
-  // Only run this function if password was actually modified
-  if (!this.isModified('password')) return next();
+  try {
+    // Only hash if password is modified
+    if (!this.isModified('password')) return next();
 
-  // Hash the password with cost of 12
-  this.password = await bcrypt.hash(this.password, 12);
-  next();
+    this.password = await bcrypt.hash(this.password, 12);
+    next();
+  } catch (err) {
+    next(err); // pass errors to next middleware
+  }
 });
 
-// Compare password method
-userSchema.methods.comparePassword = async function(candidatePassword) {
+// Compare password
+userSchema.methods.comparePassword = async function (candidatePassword) {
+  if (!this.password) throw new Error('Password not set for this user');
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-// Transform output to remove sensitive data
-userSchema.methods.toJSON = function() {
+// Remove sensitive fields when returning user object
+userSchema.methods.toJSON = function () {
   const user = this.toObject();
   delete user.password;
   delete user.verificationToken;

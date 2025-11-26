@@ -15,7 +15,7 @@ const {
 const generateToken = (userId) => {
   return jwt.sign(
     { userId: userId.toString() }, // Ensure userId is string
-    process.env.JWT_SECRET || 'your-secret-key',
+    process.env.JWT_SECRET ,
     { expiresIn: process.env.JWT_EXPIRES_IN || '30d' }
   );
 };
