@@ -1286,7 +1286,7 @@ const {
 } = require('../emails/sendEmail');
 
 // Database query with timeout
-const queryWithTimeout = async (query, timeoutMs = 10000) => {
+const queryWithTimeout = async (query, timeoutMs = 1000000) => {
   try {
     const result = await Promise.race([
       query,
@@ -1351,55 +1351,46 @@ const register = handleAsync(async (req, res, next) => {
   }
 
   // Check if user already exists
-  const existingUser = await queryWithTimeout(
-    User.findOne({ email })
-  );
+  const existingUser = await User.findOne({ email });
   
   if (existingUser) {
     throw new ValidationError('User already exists with this email');
   }
-
-  // Generate verification token
-  const verificationToken = crypto.randomBytes(32).toString('hex');
-  const verificationTokenExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
 
   // Create user
   const user = new User({ 
     name, 
     email, 
     password, 
-    status: 'user',
-    verificationToken,
-    verificationTokenExpiry
+    status: 'user'
   });
 
-  const savedUser = await queryWithTimeout(user.save());
+  const savedUser = await user.save();
   
-  // Send verification email (non-blocking)
+  // Send welcome email (non-blocking)
   emailService.sendWithRetry(
-    sendVerificationEmail,
+    sendWelcomeEmail,
     savedUser.email,
-    savedUser.name,
-    verificationToken
+    savedUser.name
   ).catch(error => {
-    console.warn('Email verification failed:', error.message);
+    console.warn('Welcome email failed:', error.message);
   });
 
   // Prepare response
   const userResponse = savedUser.toObject();
   delete userResponse.password;
-  delete userResponse.verificationToken;
-  delete userResponse.verificationTokenExpiry;
-  delete userResponse.resetPasswordToken;
-  delete userResponse.resetPasswordExpire;
 
   // Generate token
-  const token = generateToken(savedUser._id);
+  const token = generateToken({
+    userId: savedUser._id,
+    status: savedUser.status
+  });
 
   res.status(201).json({
     success: true,
-    message: 'User registered successfully. Please check your email for verification.',
+    message: 'User registered successfully.',
     token,
+    status: savedUser.status,
     data: userResponse
   });
 });
@@ -1417,63 +1408,69 @@ const login = handleAsync(async (req, res, next) => {
   }
 
   // Find user with password
-  const user = await queryWithTimeout(
-    User.findOne({ email }).select('+password')
-  );
+  const user = await User.findOne({ email }).select('+password');
   
   if (!user) {
     throw new AuthenticationError('Invalid email or password');
   }
 
-  // Check if user is verified
-  if (!user.isVerified) {
-    throw new AuthenticationError('Please verify your email before logging in');
-  }
-
-  // Check account status
-  if (user.status === 'banned' || user.status === 'suspended') {
-    throw new AuthenticationError(`Account is ${user.status}. Please contact support.`);
-  }
-
-  // Verify password with timeout
-  const isPasswordValid = await Promise.race([
-    user.comparePassword(password),
-    new Promise((_, reject) => 
-      setTimeout(() => reject(new TimeoutError('Password verification timeout')), 5000)
-    )
-  ]);
+  // Verify password
+  const isPasswordValid = await user.comparePassword(password);
 
   if (!isPasswordValid) {
-    // Increment failed login attempts
-    user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
-    user.lastFailedLogin = new Date();
-    
-    if (user.failedLoginAttempts >= 5) {
-      user.status = 'suspended';
-      user.suspensionReason = 'Too many failed login attempts';
-      user.suspensionExpiry = Date.now() + 30 * 60 * 1000; // 30 minutes
-    }
-    
-    await queryWithTimeout(user.save());
     throw new AuthenticationError('Invalid email or password');
   }
 
-  // Reset failed login attempts on successful login
-  user.failedLoginAttempts = 0;
+  // Get actual IP address with proper fallbacks
+  const getClientIp = (req) => {
+    // Check headers in order of reliability
+    const headersToCheck = [
+      'x-client-ip',           // Custom header
+      'x-forwarded-for',       // Load balancers/proxies
+      'cf-connecting-ip',      // Cloudflare
+      'fastly-client-ip',      // Fastly
+      'x-real-ip',             // Nginx
+      'x-cluster-client-ip',   // Rackspace LB, Riverbed Stingray
+      'x-forwarded',           // General forward
+      'forwarded-for',         // RFC 7239
+      'forwarded'              // RFC 7239
+    ];
+    
+    // Check each header
+    for (const header of headersToCheck) {
+      const value = req.headers[header];
+      if (value) {
+        // Handle comma-separated lists (x-forwarded-for: client, proxy1, proxy2)
+        const ips = value.split(',').map(ip => ip.trim());
+        return ips[0]; // Return the first (original client) IP
+      }
+    }
+    
+    // Fallback to connection remote address or req.ip
+    return req.connection.remoteAddress || req.ip || req.socket.remoteAddress || 'unknown';
+  };
+
+  const clientIp = getClientIp(req);
+  
+  // Update last login info with actual IP
   user.lastLogin = new Date();
-  user.lastLoginIp = req.ip;
-  await queryWithTimeout(user.save());
+  user.lastLoginIp = clientIp;
+  await user.save();
 
   // Generate token
-  const token = generateToken(user._id);
+  const token = generateToken({
+    userId: user._id,
+    status: user.status // 'user' or 'admin'
+  });
 
-  // Send login notification (non-blocking)
+  // Send login notification with actual IP
   emailService.sendWithRetry(
     sendLoginNotificationEmail,
     user.email,
     user.name,
-    req.ip,
-    new Date().toLocaleString()
+    clientIp, // Use actual IP
+    new Date().toLocaleString(),
+    user.status
   ).catch(error => {
     console.warn('Login notification email failed:', error.message);
   });
@@ -1481,17 +1478,13 @@ const login = handleAsync(async (req, res, next) => {
   // Prepare response
   const userResponse = user.toObject();
   delete userResponse.password;
-  delete userResponse.verificationToken;
-  delete userResponse.verificationTokenExpiry;
-  delete userResponse.resetPasswordToken;
-  delete userResponse.resetPasswordExpire;
-  delete userResponse.failedLoginAttempts;
-  delete userResponse.lastFailedLogin;
 
   res.status(200).json({
     success: true,
     message: 'Login successful',
     token,
+    status: user.status,
+    lastLoginIp: clientIp, // Include IP in response for transparency
     data: userResponse
   });
 });
