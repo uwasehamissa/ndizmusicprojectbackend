@@ -1265,17 +1265,6 @@
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const dbConnection = require('../utils/dbConnection');
-const emailService = require('../utils/emailService');
-const {
-  AppError,
-  DatabaseError,
-  TimeoutError,
-  AuthenticationError,
-  ValidationError,
-  NotFoundError,
-  handleAsync
-} = require('../utils/errorHandler');
 const {
   sendVerificationEmail,
   sendWelcomeEmail,
@@ -1285,79 +1274,53 @@ const {
   sendStatusChangeEmail
 } = require('../emails/sendEmail');
 
-// Database query with timeout
-const queryWithTimeout = async (query, timeoutMs = 1000000) => {
-  try {
-    const result = await Promise.race([
-      query,
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new TimeoutError(`Database query timeout after ${timeoutMs}ms`)), timeoutMs)
-      )
-    ]);
-    return result;
-  } catch (error) {
-    if (error instanceof TimeoutError) {
-      throw error;
-    }
-    throw new DatabaseError(`Database operation failed: ${error.message}`);
-  }
-};
-
 // Generate JWT Token
 const generateToken = (userId) => {
-  try {
-    if (!process.env.JWT_SECRET) {
-      throw new Error('JWT_SECRET is not configured');
+  return jwt.sign(
+    { userId: userId.toString() },
+    process.env.JWT_SECRET,
+    { 
+      expiresIn: process.env.JWT_EXPIRES_IN || '30d',
+      algorithm: 'HS256'
     }
-    
-    return jwt.sign(
-      { userId: userId.toString() },
-      process.env.JWT_SECRET,
-      { 
-        expiresIn: process.env.JWT_EXPIRES_IN || '30d',
-        algorithm: 'HS256'
-      }
-    );
-  } catch (error) {
-    throw new AuthenticationError('Failed to generate authentication token');
-  }
+  );
 };
 
-// CREATE - Register new user
-const register = handleAsync(async (req, res, next) => {
-  // Check database connection
-  await dbConnection.checkConnection();
+// Get client IP
+const getClientIp = (req) => {
+  const headersToCheck = [
+    'x-client-ip',
+    'x-forwarded-for',
+    'cf-connecting-ip',
+    'fastly-client-ip',
+    'x-real-ip'
+  ];
   
+  for (const header of headersToCheck) {
+    const value = req.headers[header];
+    if (value) {
+      const ips = value.split(',').map(ip => ip.trim());
+      return ips[0];
+    }
+  }
+  
+  return req.connection.remoteAddress || req.ip || req.socket.remoteAddress || 'unknown';
+};
+
+// Auth Controllers
+const register = async (req, res) => {
   const { name, email, password, confirmPassword } = req.body;
 
-  // Validation
-  if (!name || !email || !password || !confirmPassword) {
-    throw new ValidationError('All fields are required');
-  }
-
   if (password !== confirmPassword) {
-    throw new ValidationError('Passwords do not match');
+    return res.status(400).json({ error: 'Passwords do not match' });
   }
 
-  // Email validation
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(email)) {
-    throw new ValidationError('Invalid email format');
-  }
-
-  // Password strength validation
-  if (password.length < 8) {
-    throw new ValidationError('Password must be at least 8 characters long');
-  }
-
-  // Check if user already exists
   const existingUser = await User.findOne({ email });
   
   if (existingUser) {
-    throw new ValidationError('User already exists with this email');
+    return res.status(400).json({ error: 'User already exists with this email' });
   }
 
-  // Create user
   const user = new User({ 
     name, 
     email, 
@@ -1367,115 +1330,58 @@ const register = handleAsync(async (req, res, next) => {
 
   const savedUser = await user.save();
   
-  // Send welcome email (non-blocking)
-  emailService.sendWithRetry(
-    sendWelcomeEmail,
-    savedUser.email,
-    savedUser.name
-  ).catch(error => {
-    console.warn('Welcome email failed:', error.message);
-  });
+  // Send verification email
+  const verificationToken = crypto.randomBytes(32).toString('hex');
+  const verificationTokenHash = crypto.createHash('sha256').update(verificationToken).digest('hex');
+  
+  savedUser.verificationToken = verificationTokenHash;
+  savedUser.verificationTokenExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+  await savedUser.save();
+  
+  sendVerificationEmail(savedUser.email, savedUser.name, verificationToken)
+    .catch(error => console.warn('Verification email failed:', error.message));
 
-  // Prepare response
   const userResponse = savedUser.toObject();
   delete userResponse.password;
 
-  // Generate token
-  const token = generateToken({
-    userId: savedUser._id,
-    status: savedUser.status
-  });
+  const token = generateToken(savedUser._id);
 
   res.status(201).json({
     success: true,
-    message: 'User registered successfully.',
+    message: 'User registered successfully. Please check your email for verification.',
     token,
     status: savedUser.status,
     data: userResponse
   });
-});
+};
 
-// READ - Login user
-const login = handleAsync(async (req, res, next) => {
-  // Check database connection
-  await dbConnection.checkConnection();
-  
+const login = async (req, res) => {
   const { email, password } = req.body;
 
-  // Validation
-  if (!email || !password) {
-    throw new ValidationError('Please provide email and password');
-  }
-
-  // Find user with password
   const user = await User.findOne({ email }).select('+password');
   
   if (!user) {
-    throw new AuthenticationError('Invalid email or password');
+    return res.status(401).json({ error: 'Invalid email or password' });
   }
 
-  // Verify password
   const isPasswordValid = await user.comparePassword(password);
 
   if (!isPasswordValid) {
-    throw new AuthenticationError('Invalid email or password');
+    return res.status(401).json({ error: 'Invalid email or password' });
   }
-
-  // Get actual IP address with proper fallbacks
-  const getClientIp = (req) => {
-    // Check headers in order of reliability
-    const headersToCheck = [
-      'x-client-ip',           // Custom header
-      'x-forwarded-for',       // Load balancers/proxies
-      'cf-connecting-ip',      // Cloudflare
-      'fastly-client-ip',      // Fastly
-      'x-real-ip',             // Nginx
-      'x-cluster-client-ip',   // Rackspace LB, Riverbed Stingray
-      'x-forwarded',           // General forward
-      'forwarded-for',         // RFC 7239
-      'forwarded'              // RFC 7239
-    ];
-    
-    // Check each header
-    for (const header of headersToCheck) {
-      const value = req.headers[header];
-      if (value) {
-        // Handle comma-separated lists (x-forwarded-for: client, proxy1, proxy2)
-        const ips = value.split(',').map(ip => ip.trim());
-        return ips[0]; // Return the first (original client) IP
-      }
-    }
-    
-    // Fallback to connection remote address or req.ip
-    return req.connection.remoteAddress || req.ip || req.socket.remoteAddress || 'unknown';
-  };
 
   const clientIp = getClientIp(req);
   
-  // Update last login info with actual IP
   user.lastLogin = new Date();
   user.lastLoginIp = clientIp;
   await user.save();
 
-  // Generate token
-  const token = generateToken({
-    userId: user._id,
-    status: user.status // 'user' or 'admin'
-  });
+  const token = generateToken(user._id);
 
-  // Send login notification with actual IP
-  emailService.sendWithRetry(
-    sendLoginNotificationEmail,
-    user.email,
-    user.name,
-    clientIp, // Use actual IP
-    new Date().toLocaleString(),
-    user.status
-  ).catch(error => {
-    console.warn('Login notification email failed:', error.message);
-  });
+  // Send login notification
+  sendLoginNotificationEmail(user.email, user.name, clientIp, new Date().toLocaleString(), user.status)
+    .catch(error => console.warn('Login notification email failed:', error.message));
 
-  // Prepare response
   const userResponse = user.toObject();
   delete userResponse.password;
 
@@ -1484,41 +1390,136 @@ const login = handleAsync(async (req, res, next) => {
     message: 'Login successful',
     token,
     status: user.status,
-    lastLoginIp: clientIp, // Include IP in response for transparency
+    lastLoginIp: clientIp,
     data: userResponse
   });
-});
+};
 
-// READ - Get current user profile
-const getMe = handleAsync(async (req, res, next) => {
-  await dbConnection.checkConnection();
+const logout = async (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Logged out successfully'
+  });
+};
+
+const verifyEmail = async (req, res) => {
+  const { token } = req.params;
+
+  const verificationTokenHash = crypto.createHash('sha256').update(token).digest('hex');
   
-  const user = await queryWithTimeout(
-    User.findById(req.user.id)
-      .select('-password -verificationToken -resetPasswordToken -resetPasswordExpire')
-  );
+  const user = await User.findOne({ 
+    verificationToken: verificationTokenHash,
+    verificationTokenExpiry: { $gt: Date.now() }
+  });
+
+  if (!user) {
+    return res.status(400).json({ error: 'Invalid or expired verification token' });
+  }
+
+  user.isVerified = true;
+  user.verificationToken = undefined;
+  user.verificationTokenExpiry = undefined;
+  user.emailVerifiedAt = new Date();
+  
+  await user.save();
+
+  // Send welcome email after verification
+  sendWelcomeEmail(user.email, user.name)
+    .catch(error => console.warn('Welcome email failed:', error.message));
+
+  res.status(200).json({
+    success: true,
+    message: 'Email verified successfully'
+  });
+};
+
+const forgotPassword = async (req, res) => {
+  const { email } = req.body;
+
+  const user = await User.findOne({ email });
+
+  if (!user) {
+    // For security, don't reveal if user exists
+    return res.status(200).json({
+      success: true,
+      message: 'If an account exists with this email, you will receive a password reset link'
+    });
+  }
+
+  const resetToken = crypto.randomBytes(32).toString('hex');
+  const resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+  
+  user.resetPasswordToken = resetPasswordToken;
+  user.resetPasswordExpire = Date.now() + 60 * 60 * 1000; // 1 hour
+  
+  await user.save();
+
+  sendPasswordResetEmail(user.email, user.name, resetToken)
+    .catch(error => console.warn('Password reset email failed:', error.message));
+
+  res.status(200).json({
+    success: true,
+    message: 'Password reset email sent'
+  });
+};
+
+const resetPassword = async (req, res) => {
+  const { token } = req.params;
+  const { password, confirmPassword } = req.body;
+
+  if (password !== confirmPassword) {
+    return res.status(400).json({ error: 'Passwords do not match' });
+  }
+
+  const resetPasswordToken = crypto.createHash('sha256').update(token).digest('hex');
+  
+  const user = await User.findOne({
+    resetPasswordToken,
+    resetPasswordExpire: { $gt: Date.now() }
+  });
+
+  if (!user) {
+    return res.status(400).json({ error: 'Invalid or expired reset token' });
+  }
+
+  user.password = password;
+  user.resetPasswordToken = undefined;
+  user.resetPasswordExpire = undefined;
+  user.lastPasswordChange = new Date();
+  
+  await user.save();
+
+  sendPasswordChangedEmail(user.email, user.name)
+    .catch(error => console.warn('Password changed email failed:', error.message));
+
+  res.status(200).json({
+    success: true,
+    message: 'Password reset successfully'
+  });
+};
+
+// User Controllers
+const getMe = async (req, res) => {
+  const user = await User.findById(req.user.id)
+    .select('-password -verificationToken -resetPasswordToken -resetPasswordExpire');
   
   if (!user) {
-    throw new NotFoundError('User not found');
+    return res.status(404).json({ error: 'User not found' });
   }
   
   res.status(200).json({
     success: true,
     data: user
   });
-});
+};
 
-// READ - Get all users (Admin only)
-const getAllUsers = handleAsync(async (req, res, next) => {
-  await dbConnection.checkConnection();
-  
+const getAllUsers = async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
   const skip = (page - 1) * limit;
 
   const filter = {};
   
-  // Apply filters
   if (req.query.status) filter.status = req.query.status;
   if (req.query.isVerified) filter.isVerified = req.query.isVerified === 'true';
   if (req.query.search) {
@@ -1528,7 +1529,6 @@ const getAllUsers = handleAsync(async (req, res, next) => {
     ];
   }
 
-  // Sorting
   const sort = {};
   if (req.query.sortBy) {
     const sortOrder = req.query.sortOrder === 'desc' ? -1 : 1;
@@ -1541,20 +1541,13 @@ const getAllUsers = handleAsync(async (req, res, next) => {
     sort.createdAt = -1;
   }
 
-  // Execute queries with timeout
   const [users, total] = await Promise.all([
-    queryWithTimeout(
-      User.find(filter)
-        .select('-password -verificationToken -resetPasswordToken -resetPasswordExpire')
-        .sort(sort)
-        .skip(skip)
-        .limit(limit),
-      15000 // 15 second timeout
-    ),
-    queryWithTimeout(
-      User.countDocuments(filter),
-      10000 // 10 second timeout
-    )
+    User.find(filter)
+      .select('-password -verificationToken -resetPasswordToken -resetPasswordExpire')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit),
+    User.countDocuments(filter)
   ]);
 
   const totalPages = Math.ceil(total / limit);
@@ -1567,205 +1560,118 @@ const getAllUsers = handleAsync(async (req, res, next) => {
     totalPages,
     data: users
   });
-});
+};
 
-// UPDATE - Verify email
-const verifyEmail = handleAsync(async (req, res, next) => {
-  await dbConnection.checkConnection();
+const getUserById = async (req, res) => {
+  const user = await User.findById(req.params.id)
+    .select('-password -verificationToken -resetPasswordToken -resetPasswordExpire');
   
-  const { token } = req.params;
-  
-  if (!token) {
-    throw new ValidationError('Verification token is required');
-  }
-
-  const user = await queryWithTimeout(
-    User.findOne({ 
-      verificationToken: token,
-      verificationTokenExpiry: { $gt: Date.now() }
-    })
-  );
-
   if (!user) {
-    throw new ValidationError('Invalid or expired verification token');
+    return res.status(404).json({ error: 'User not found' });
   }
-
-  // Update user
-  user.isVerified = true;
-  user.verificationToken = undefined;
-  user.verificationTokenExpiry = undefined;
-  user.emailVerifiedAt = new Date();
   
-  await queryWithTimeout(user.save());
-
-  // Send welcome email (non-blocking)
-  emailService.sendWithRetry(
-    sendWelcomeEmail,
-    user.email,
-    user.name
-  ).catch(error => {
-    console.warn('Welcome email failed:', error.message);
-  });
-
   res.status(200).json({
     success: true,
-    message: 'Email verified successfully'
+    data: user
   });
-});
+};
 
-// UPDATE - Forgot password
-const forgotPassword = handleAsync(async (req, res, next) => {
-  await dbConnection.checkConnection();
+const updateProfile = async (req, res) => {
+  const { name, email } = req.body;
+  const updateData = {};
   
-  const { email } = req.body;
-  
-  if (!email) {
-    throw new ValidationError('Email is required');
+  if (name) updateData.name = name;
+  if (email) {
+    const existingUser = await User.findOne({ email, _id: { $ne: req.user.id } });
+    
+    if (existingUser) {
+      return res.status(400).json({ error: 'Email already exists' });
+    }
+    updateData.email = email;
   }
-
-  const user = await queryWithTimeout(
-    User.findOne({ email })
-  );
-
-  if (!user) {
-    // Don't reveal if user exists for security
-    return res.status(200).json({
-      success: true,
-      message: 'If an account exists with this email, you will receive a password reset link'
-    });
-  }
-
-  // Generate reset token
-  const resetToken = crypto.randomBytes(32).toString('hex');
-  const resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
   
-  user.resetPasswordToken = resetPasswordToken;
-  user.resetPasswordExpire = Date.now() + 60 * 60 * 1000; // 1 hour
+  const updatedUser = await User.findByIdAndUpdate(
+    req.user.id,
+    updateData,
+    { new: true, runValidators: true }
+  ).select('-password');
   
-  await queryWithTimeout(user.save());
-
-  // Send password reset email (non-blocking)
-  emailService.sendWithRetry(
-    sendPasswordResetEmail,
-    user.email,
-    user.name,
-    resetToken
-  ).catch(error => {
-    console.warn('Password reset email failed:', error.message);
-  });
-
   res.status(200).json({
     success: true,
-    message: 'Password reset email sent'
+    message: 'Profile updated successfully',
+    data: updatedUser
   });
-});
+};
 
-// UPDATE - Reset password
-const resetPassword = handleAsync(async (req, res, next) => {
-  await dbConnection.checkConnection();
+const updatePassword = async (req, res) => {
+  const { currentPassword, newPassword, confirmPassword } = req.body;
   
-  const { token } = req.params;
-  const { password, confirmPassword } = req.body;
-
-  if (!token) {
-    throw new ValidationError('Reset token is required');
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ error: 'New passwords do not match' });
   }
-
-  if (!password || !confirmPassword) {
-    throw new ValidationError('Password and confirmation are required');
-  }
-
-  if (password !== confirmPassword) {
-    throw new ValidationError('Passwords do not match');
-  }
-
-  // Hash the token to compare
-  const resetPasswordToken = crypto.createHash('sha256').update(token).digest('hex');
   
-  const user = await queryWithTimeout(
-    User.findOne({
-      resetPasswordToken,
-      resetPasswordExpire: { $gt: Date.now() }
-    })
-  );
-
+  const user = await User.findById(req.user.id).select('+password');
+  
   if (!user) {
-    throw new ValidationError('Invalid or expired reset token');
+    return res.status(404).json({ error: 'User not found' });
   }
-
-  // Update password
-  user.password = password;
-  user.resetPasswordToken = undefined;
-  user.resetPasswordExpire = undefined;
+  
+  const isPasswordValid = await user.comparePassword(currentPassword);
+  
+  if (!isPasswordValid) {
+    return res.status(401).json({ error: 'Current password is incorrect' });
+  }
+  
+  user.password = newPassword;
   user.lastPasswordChange = new Date();
+  await user.save();
   
-  await queryWithTimeout(user.save());
-
-  // Send password changed email (non-blocking)
-  emailService.sendWithRetry(
-    sendPasswordChangedEmail,
-    user.email,
-    user.name
-  ).catch(error => {
-    console.warn('Password changed email failed:', error.message);
-  });
-
+  sendPasswordChangedEmail(user.email, user.name)
+    .catch(error => console.warn('Password changed email failed:', error.message));
+  
   res.status(200).json({
     success: true,
-    message: 'Password reset successfully'
+    message: 'Password updated successfully'
   });
-});
+};
 
-// UPDATE - Update user status
-const updateStatus = handleAsync(async (req, res, next) => {
-  await dbConnection.checkConnection();
-  
+const updateStatus = async (req, res) => {
   const { id } = req.params;
   const { status, reason } = req.body;
   
-  // Validate status
   const allowedStatuses = ['user', 'admin', 'moderator', 'banned', 'suspended'];
   if (!allowedStatuses.includes(status)) {
-    throw new ValidationError(`Invalid status. Allowed: ${allowedStatuses.join(', ')}`);
+    return res.status(400).json({ 
+      error: `Invalid status. Allowed: ${allowedStatuses.join(', ')}` 
+    });
   }
 
-  // Check if user exists
-  const user = await queryWithTimeout(
-    User.findById(id)
-  );
+  const user = await User.findById(id);
   
   if (!user) {
-    throw new NotFoundError('User not found');
+    return res.status(404).json({ error: 'User not found' });
   }
 
-  // Don't allow self-status change to banned/suspended
   if (req.user.id === id && (status === 'banned' || status === 'suspended')) {
-    throw new ValidationError('You cannot ban or suspend yourself');
+    return res.status(400).json({ 
+      error: 'You cannot ban or suspend yourself' 
+    });
   }
 
-  // Update status
   user.status = status;
   
   if (status === 'suspended') {
     user.suspensionReason = reason || 'Administrative action';
-    user.suspensionExpiry = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
+    user.suspensionExpiry = Date.now() + 7 * 24 * 60 * 60 * 1000;
   } else if (status === 'banned') {
     user.banReason = reason || 'Administrative action';
     user.bannedAt = new Date();
   }
   
-  const updatedUser = await queryWithTimeout(user.save());
+  const updatedUser = await user.save();
 
-  // Send status change email (non-blocking)
-  emailService.sendWithRetry(
-    sendStatusChangeEmail,
-    user.email,
-    user.name,
-    status,
-    reason
-  ).catch(error => {
-    console.warn('Status change email failed:', error.message);
-  });
+  sendStatusChangeEmail(user.email, user.name, status, reason)
+    .catch(error => console.warn('Status change email failed:', error.message));
 
   res.status(200).json({
     success: true,
@@ -1777,12 +1683,53 @@ const updateStatus = handleAsync(async (req, res, next) => {
       updatedAt: updatedUser.updatedAt
     }
   });
-});
+};
 
-// Health check endpoint
-const healthCheck = handleAsync(async (req, res, next) => {
+const deleteAccount = async (req, res) => {
+  const user = await User.findByIdAndDelete(req.user.id);
+  
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  
+  res.status(200).json({
+    success: true,
+    message: 'Your account has been deleted successfully'
+  });
+};
+
+const deleteUser = async (req, res) => {
+  const { id } = req.params;
+  
+  if (id === req.user.id) {
+    return res.status(400).json({ 
+      error: 'You cannot delete your own account using this route' 
+    });
+  }
+  
+  const deletedUser = await User.findByIdAndDelete(id);
+  
+  if (!deletedUser) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  
+  res.status(200).json({
+    success: true,
+    message: 'User deleted successfully'
+  });
+};
+
+// System Controllers
+const healthCheck = async (req, res) => {
   try {
-    const dbStatus = await dbConnection.checkConnection();
+    // Check if database is connected
+    if (User.db.readyState !== 1) {
+      return res.status(500).json({
+        success: false,
+        message: 'Database connection issue',
+        database: { status: 'disconnected', readyState: User.db.readyState }
+      });
+    }
     
     res.status(200).json({
       success: true,
@@ -1791,18 +1738,36 @@ const healthCheck = handleAsync(async (req, res, next) => {
       timestamp: new Date().toISOString(),
       database: {
         status: 'connected',
-        ...dbConnection.getConnectionStatus()
+        readyState: User.db.readyState,
+        name: User.db.name
       }
     });
   } catch (error) {
-    throw new DatabaseError('Service is unhealthy');
+    res.status(500).json({
+      success: false,
+      message: 'Service is unhealthy',
+      error: error.message
+    });
   }
-});
+};
 
-// Get server status
-const getStatus = handleAsync(async (req, res, next) => {
-  const dbStats = dbConnection.getConnectionStatus();
+const getStatus = async (req, res) => {
   const uptime = process.uptime();
+  
+  const formatUptime = (seconds) => {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    
+    const parts = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    if (secs > 0) parts.push(`${secs}s`);
+    
+    return parts.join(' ') || '0s';
+  };
   
   const status = {
     success: true,
@@ -1814,10 +1779,9 @@ const getStatus = handleAsync(async (req, res, next) => {
       human: formatUptime(uptime)
     },
     database: {
-      connected: dbStats.isConnected,
-      readyState: dbStats.readyState,
-      host: dbStats.host,
-      name: dbStats.name
+      connected: User.db.readyState === 1,
+      readyState: User.db.readyState,
+      name: User.db.name
     },
     environment: process.env.NODE_ENV || 'development',
     memory: {
@@ -1827,195 +1791,36 @@ const getStatus = handleAsync(async (req, res, next) => {
   };
 
   res.status(200).json(status);
-});
+};
 
-function formatUptime(seconds) {
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
-  
-  const parts = [];
-  if (days > 0) parts.push(`${days}d`);
-  if (hours > 0) parts.push(`${hours}h`);
-  if (minutes > 0) parts.push(`${minutes}m`);
-  if (secs > 0) parts.push(`${secs}s`);
-  
-  return parts.join(' ') || '0s';
-}
+const testAuth = async (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Authentication is working!',
+    user: {
+      id: req.user.id,
+      email: req.user.email,
+      status: req.user.status
+    }
+  });
+};
 
-// Export all functions
 module.exports = {
   register,
   login,
-  getMe,
-  getAllUsers,
-  getUserById: handleAsync(async (req, res, next) => {
-    await dbConnection.checkConnection();
-    
-    const user = await queryWithTimeout(
-      User.findById(req.params.id)
-        .select('-password -verificationToken -resetPasswordToken -resetPasswordExpire')
-    );
-    
-    if (!user) {
-      throw new NotFoundError('User not found');
-    }
-    
-    res.status(200).json({
-      success: true,
-      data: user
-    });
-  }),
+  logout,
   verifyEmail,
   forgotPassword,
   resetPassword,
-  updateProfile: handleAsync(async (req, res, next) => {
-    await dbConnection.checkConnection();
-    
-    const { name, email } = req.body;
-    const updateData = {};
-    
-    if (name) updateData.name = name;
-    if (email) {
-      // Check if email exists for another user
-      const existingUser = await queryWithTimeout(
-        User.findOne({ email, _id: { $ne: req.user.id } })
-      );
-      
-      if (existingUser) {
-        throw new ValidationError('Email already exists');
-      }
-      updateData.email = email;
-    }
-    
-    const updatedUser = await queryWithTimeout(
-      User.findByIdAndUpdate(
-        req.user.id,
-        updateData,
-        { new: true, runValidators: true }
-      ).select('-password')
-    );
-    
-    res.status(200).json({
-      success: true,
-      message: 'Profile updated successfully',
-      data: updatedUser
-    });
-  }),
-  updatePassword: handleAsync(async (req, res, next) => {
-    await dbConnection.checkConnection();
-    
-    const { currentPassword, newPassword, confirmPassword } = req.body;
-    
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      throw new ValidationError('All password fields are required');
-    }
-    
-    if (newPassword !== confirmPassword) {
-      throw new ValidationError('New passwords do not match');
-    }
-    
-    // Get user with password
-    const user = await queryWithTimeout(
-      User.findById(req.user.id).select('+password')
-    );
-    
-    if (!user) {
-      throw new NotFoundError('User not found');
-    }
-    
-    // Verify current password
-    const isPasswordValid = await Promise.race([
-      user.comparePassword(currentPassword),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new TimeoutError('Password verification timeout')), 5000)
-      )
-    ]);
-    
-    if (!isPasswordValid) {
-      throw new AuthenticationError('Current password is incorrect');
-    }
-    
-    // Update password
-    user.password = newPassword;
-    user.lastPasswordChange = new Date();
-    await queryWithTimeout(user.save());
-    
-    // Send password changed email
-    emailService.sendWithRetry(
-      sendPasswordChangedEmail,
-      user.email,
-      user.name
-    ).catch(error => {
-      console.warn('Password changed email failed:', error.message);
-    });
-    
-    res.status(200).json({
-      success: true,
-      message: 'Password updated successfully'
-    });
-  }),
+  getMe,
+  getAllUsers,
+  getUserById,
+  updateProfile,
+  updatePassword,
   updateStatus,
-  deleteAccount: handleAsync(async (req, res, next) => {
-    await dbConnection.checkConnection();
-    
-    const user = await queryWithTimeout(
-      User.findByIdAndDelete(req.user.id)
-    );
-    
-    if (!user) {
-      throw new NotFoundError('User not found');
-    }
-    
-    res.status(200).json({
-      success: true,
-      message: 'Your account has been deleted successfully'
-    });
-  }),
-  deleteUser: handleAsync(async (req, res, next) => {
-    await dbConnection.checkConnection();
-    
-    const { id } = req.params;
-    
-    // Prevent self-deletion through admin route
-    if (id === req.user.id) {
-      throw new ValidationError('You cannot delete your own account using this route');
-    }
-    
-    const deletedUser = await queryWithTimeout(
-      User.findByIdAndDelete(id)
-    );
-    
-    if (!deletedUser) {
-      throw new NotFoundError('User not found');
-    }
-    
-    res.status(200).json({
-      success: true,
-      message: 'User deleted successfully'
-    });
-  }),
-  logout: handleAsync(async (req, res, next) => {
-    // In a stateless JWT system, logout is client-side
-    // But we can implement token blacklisting if needed
-    
-    res.status(200).json({
-      success: true,
-      message: 'Logged out successfully'
-    });
-  }),
+  deleteAccount,
+  deleteUser,
   healthCheck,
   getStatus,
-  testAuth: handleAsync(async (req, res, next) => {
-    res.status(200).json({
-      success: true,
-      message: 'Authentication is working!',
-      user: {
-        id: req.user.id,
-        email: req.user.email,
-        status: req.user.status
-      }
-    });
-  })
+  testAuth
 };
