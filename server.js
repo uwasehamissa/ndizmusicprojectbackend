@@ -26,14 +26,6 @@
 // const PORT = process.env.PORT || 5000;
 // app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-
-
-
-
-
-
-
-
 // const express = require("express");
 // const mongoose = require("mongoose");
 // const dotenv = require("dotenv");
@@ -190,34 +182,27 @@
 //   console.log(`🔗 Health check: http://localhost:${PORT}/health`);
 // });
 
-
-
-
-
-
-
-
-require('dotenv').config();
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const authRoutes = require('./routes/authRoutes');
-const { testEmailConfig } = require('./emails/sendEmail');
+require("dotenv").config();
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const authRoutes = require("./routes/authRoutes");
+const bookingRoutes = require("./routes/bookingRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
+const { testEmailConfig } = require("./emails/sendEmail");
 
 const app = express();
 
 // Connect to MongoDB with timeout handling
 const connectDB = async () => {
   try {
-    const mongoURI = process.env.MONGODB_URI || 'mongodb://localhost:27017/auth-app';
+    const mongoURI = process.env.MONGODB_URI;
 
     console.log("🔄 Connecting to MongoDB...");
 
     const options = {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
       serverSelectionTimeoutMS: 1000000, // 10 seconds timeout
       socketTimeoutMS: 4500000,
       connectTimeoutMS: 1000000,
@@ -268,12 +253,14 @@ const testEmailOnStartup = async () => {
   try {
     if (process.env.SMTP_EMAIL && process.env.SMTP_PASSWORD) {
       await testEmailConfig();
-      console.log('✅ Email configuration test passed');
+      console.log("✅ Email configuration test passed");
     } else {
-      console.warn('⚠️ Email configuration not set. Some features may not work.');
+      console.warn(
+        "⚠️ Email configuration not set. Some features may not work."
+      );
     }
   } catch (error) {
-    console.warn('⚠️ Email configuration test failed:', error.message);
+    console.warn("⚠️ Email configuration test failed:", error.message);
   }
 };
 
@@ -289,96 +276,97 @@ const limiter = rateLimit({
   max: 100, // Limit each IP to 100 requests per windowMs
   message: {
     success: false,
-    message: 'Too many requests from this IP, please try again later.'
-  }
+    message: "Too many requests from this IP, please try again later.",
+  },
 });
-app.use('/api', limiter);
+app.use("/api", limiter);
 
 // Routes
-app.use('/api/users', authRoutes);
-
+app.use("/api/users", authRoutes);
+app.use("/api/bookings", bookingRoutes);
+app.use("/api/notifications", notificationRoutes);
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get("/health", (req, res) => {
   const dbState = mongoose.connection.readyState;
   const states = {
-    0: 'disconnected',
-    1: 'connected',
-    2: 'connecting',
-    3: 'disconnecting',
+    0: "disconnected",
+    1: "connected",
+    2: "connecting",
+    3: "disconnecting",
   };
 
   res.json({
     success: true,
-    message: 'Server is running',
+    message: "Server is running",
     database: {
-      status: states[dbState] || 'unknown',
-      readyState: dbState
+      status: states[dbState] || "unknown",
+      readyState: dbState,
     },
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     memory: {
       used: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)} MB`,
-      total: `${Math.round(process.memoryUsage().heapTotal / 1024 / 1024)} MB`
-    }
+      total: `${Math.round(process.memoryUsage().heapTotal / 1024 / 1024)} MB`,
+    },
   });
 });
 
 // Welcome route
-app.get('/', (req, res) => {
+app.get("/", (req, res) => {
   res.json({
     success: true,
-    message: 'Authentication API is running',
-    version: process.env.npm_package_version || '1.0.0',
+    message: "Authentication API is running",
+    version: process.env.npm_package_version || "1.0.0",
     timestamp: new Date().toISOString(),
     endpoints: {
-      auth: '/api/users',
-      register: 'POST /api/users/register',
-      login: 'POST /api/users/login',
-      profile: 'GET /api/users/profile',
-      getAllUsers: 'GET /api/users',
-      forgotPassword: 'POST /api/users/forgot-password',
-      resetPassword: 'POST /api/users/reset-password/:token',
-      verifyEmail: 'GET /api/users/verify-email/:token',
-      health: 'GET /health'
+      auth: "/api/users",
+      register: "POST /api/users/register",
+      login: "POST /api/users/login",
+      profile: "GET /api/users/profile",
+      getAllUsers: "GET /api/users",
+      forgotPassword: "POST /api/users/forgot-password",
+      resetPassword: "POST /api/users/reset-password/:token",
+      verifyEmail: "GET /api/users/verify-email/:token",
+      health: "GET /health",
     },
     documentation: {
-      baseUrl: 'http://localhost:' + (process.env.PORT || 5000),
-      routes: 'All routes are prefixed with /api/users',
-      authentication: 'JWT Bearer token required for protected routes'
-    }
+      baseUrl: "http://localhost:" + (process.env.PORT || 5000),
+      routes: "All routes are prefixed with /api/users",
+      authentication: "JWT Bearer token required for protected routes",
+    },
   });
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Server Error:', err);
+  console.error("Server Error:", err);
 
   // Handle timeout errors
-  if (err.message.includes('timeout') || err.code === 'ETIMEDOUT') {
+  if (err.message.includes("timeout") || err.code === "ETIMEDOUT") {
     return res.status(504).json({
       success: false,
-      message: 'Connection timeout',
-      error: 'Database connection timeout. Please try again.',
+      message: "Connection timeout",
+      error: "Database connection timeout. Please try again.",
     });
   }
 
   // Handle database connection errors
   if (
-    err.name === 'MongoNetworkError' ||
-    err.name === 'MongoServerSelectionError'
+    err.name === "MongoNetworkError" ||
+    err.name === "MongoServerSelectionError"
   ) {
     return res.status(503).json({
       success: false,
-      message: 'Database connection error',
-      error: 'Unable to connect to database. Please try again later.',
+      message: "Database connection error",
+      error: "Unable to connect to database. Please try again later.",
     });
   }
 
   // Default error
   res.status(err.status || 500).json({
     success: false,
-    message: err.message || 'Internal server error',
-    error: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+    message: err.message || "Internal server error",
+    error: process.env.NODE_ENV === "development" ? err.stack : undefined,
   });
 });
 
@@ -387,13 +375,13 @@ app.use((req, res) => {
     success: false,
     message: `Route ${req.originalUrl} not found`,
     availableRoutes: [
-      'GET /',
-      'GET /health',
-      'POST /api/users/register',
-      'POST /api/users/login',
-      'GET /api/users/profile',
-      'GET /api/users'
-    ]
+      "GET /",
+      "GET /health",
+      "POST /api/users/register",
+      "POST /api/users/login",
+      "GET /api/users/profile",
+      "GET /api/users",
+    ],
   });
 });
 
@@ -403,48 +391,47 @@ const startServer = async () => {
   try {
     await connectDB();
     await testEmailOnStartup();
-    
+
     app.listen(PORT, () => {
       console.log(`
       ========================================
       🚀 Server running on port ${PORT}
-      🌐 Environment: ${process.env.NODE_ENV || 'development'}
+      🌐 Environment: ${process.env.NODE_ENV || "development"}
       🔗 Local: http://localhost:${PORT}
       🔗 Health check: http://localhost:${PORT}/health
       📅 Started at: ${new Date().toLocaleString()}
       ========================================
       `);
     });
-    
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
+    console.error("❌ Failed to start server:", error);
     process.exit(1);
   }
 };
 
 // Handle graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('\n🛑 SIGINT received. Closing MongoDB connection...');
+process.on("SIGINT", async () => {
+  console.log("\n🛑 SIGINT received. Closing MongoDB connection...");
   await mongoose.connection.close();
-  console.log('✅ MongoDB connection closed');
+  console.log("✅ MongoDB connection closed");
   process.exit(0);
 });
 
-process.on('SIGTERM', async () => {
-  console.log('\n🛑 SIGTERM received. Closing MongoDB connection...');
+process.on("SIGTERM", async () => {
+  console.log("\n🛑 SIGTERM received. Closing MongoDB connection...");
   await mongoose.connection.close();
-  console.log('✅ MongoDB connection closed');
+  console.log("✅ MongoDB connection closed");
   process.exit(0);
 });
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (err) => {
-  console.error('❌ Unhandled Promise Rejection:', err);
+process.on("unhandledRejection", (err) => {
+  console.error("❌ Unhandled Promise Rejection:", err);
 });
 
 // Handle uncaught exceptions
-process.on('uncaughtException', (err) => {
-  console.error('❌ Uncaught Exception:', err);
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
   process.exit(1);
 });
 
