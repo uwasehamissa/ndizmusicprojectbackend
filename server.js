@@ -382,19 +382,18 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({
+app.use((req, res) => {
+  return res.status(404).json({
     success: false,
     message: `Route ${req.originalUrl} not found`,
-    availableRoutes: {
-      home: 'GET /',
-      health: 'GET /health',
-      register: 'POST /api/users/register',
-      login: 'POST /api/users/login',
-      userProfile: 'GET /api/users/profile',
-      getAllUsers: 'GET /api/users'
-    }
+    availableRoutes: [
+      'GET /',
+      'GET /health',
+      'POST /api/users/register',
+      'POST /api/users/login',
+      'GET /api/users/profile',
+      'GET /api/users'
+    ]
   });
 });
 
