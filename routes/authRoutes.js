@@ -59,47 +59,52 @@
 
 
 
-const express = require("express");
+const express = require('express');
 const router = express.Router();
-const authController = require("../controllers/authController");
-const { 
-  protect, 
-  requireRole,
-  optional,
-  rateLimitMiddleware,
-} = require("../middlewares/authMiddleware");
+// const { protect, admin } = require('../middleware/auth');
+const {
+  register,
+  login,
+  logout,
+  verifyEmail,
+  forgotPassword,
+  resetPassword,
+  getMe,
+  getAllUsers,
+  getUserById,
+  updateProfile,
+  updatePassword,
+  updateStatus,
+  deleteAccount,
+  deleteUser,
+  healthCheck,
+  getStatus,
+  testAuth
+} = require('../controllers/authController');
 
-// Apply rate limiting to auth routes
-router.use(rateLimitMiddleware(900000, 100)); // 15 minutes, 100 requests
+// Public routes
+router.post('/register', register);
+router.post('/login', login);
+router.get('/verify-email/:token', verifyEmail);
+router.post('/forgot-password', forgotPassword);
+router.post('/reset-password/:token', resetPassword);
+router.get('/health', healthCheck);
+router.get('/status', getStatus);
 
-// Public routes (no authentication required)
-router.post("/register", authController.register);
-router.post("/login", authController.login);
-router.post("/forgot-password", authController.forgotPassword);
-router.post("/reset-password/:token", authController.resetPassword);
-router.get("/verify-email/:token", authController.verifyEmail);
-router.get("/health", authController.healthCheck);
+// Protected routes
 
-// Protected routes (authentication required)
-router.use(protect); // All routes below require authentication
+router.get('/me', getMe);
+router.put('/profile', updateProfile);
+router.put('/password', updatePassword);
+router.delete('/account', deleteAccount);
+router.post('/logout', logout);
+router.get('/test-auth', testAuth);
 
-router.get("/profile", authController.getMe);
-router.put("/profile", authController.updateProfile);
-router.put("/password", authController.updatePassword);
-router.delete("/account", authController.deleteAccount);
-router.post("/logout", authController.logout);
+// Admin routes
 
-// Admin-only routes
-router.get("/", authController.getAllUsers);
-router.get("/:id", requireRole('admin', 'moderator'), authController.getUserById);
-router.put("/:id/status", requireRole('admin'), authController.updateStatus);
-router.delete("/:id", requireRole('admin'), authController.deleteUser);
-
-// Optional auth route (public but enhanced if logged in)
-router.get("/public/data", optional, authController.getPublicData);
-
-// Test routes
-router.get("/test/auth", protect, authController.testAuth);
-router.get("/test/admin", protect, requireRole('admin'), authController.testAdmin);
+router.get('/', getAllUsers);
+router.get('/:id', getUserById);
+router.put('/:id/status', updateStatus);
+router.delete('/:id', deleteUser);
 
 module.exports = router;
