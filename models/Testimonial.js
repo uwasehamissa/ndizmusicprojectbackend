@@ -29,14 +29,17 @@ const testimonialSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Testimonial text is required'],
     trim: true,
-    maxlength: [500, 'Testimonial cannot exceed 500 characters']
+    maxlength: 500
   },
   email: {
     type: String,
     required: [true, 'Email is required for notifications'],
     trim: true,
     lowercase: true,
-    match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid email']
+    match: [
+      /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
+      'Please enter a valid email'
+    ]
   },
   status: {
     type: String,
@@ -79,20 +82,43 @@ const testimonialSchema = new mongoose.Schema({
   }
 });
 
-// Update the updatedAt timestamp before saving
-testimonialSchema.pre('save', function(next) {
+// ======================================================
+//   UPDATED PRE-SAVE HOOK (NO NEXT CALLBACK)
+// ======================================================
+testimonialSchema.pre('save', function() {
   this.updatedAt = Date.now();
-  next();
 });
 
-// Create indexes for better performance
+// ======================================================
+//   ALTERNATIVE: USING TIMESTAMPS OPTION
+// ======================================================
+// If you prefer automatic timestamp handling, you can use:
+// const testimonialSchema = new mongoose.Schema({...}, {
+//   timestamps: true
+// });
+// This automatically adds createdAt and updatedAt fields
+
+// ======================================================
+//   ALTERNATIVE: USING PRE-SAVE WITHOUT NEXT (ANOTHER APPROACH)
+// ======================================================
+// testimonialSchema.pre('save', async function() {
+//   if (this.isModified()) {
+//     this.updatedAt = Date.now();
+//   }
+// });
+
+// ======================================================
+//   INDEXES FOR PERFORMANCE
+// ======================================================
 testimonialSchema.index({ status: 1, createdAt: -1 });
 testimonialSchema.index({ rating: -1 });
 testimonialSchema.index({ instrument: 1 });
 testimonialSchema.index({ featured: 1, status: 1 });
 
-// Virtual for formatted date
-testimonialSchema.virtual('formattedDate').get(function() {
+// ======================================================
+//   VIRTUAL FIELD
+// ======================================================
+testimonialSchema.virtual('formattedDate').get(function () {
   return this.createdAt.toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'long',
@@ -100,4 +126,13 @@ testimonialSchema.virtual('formattedDate').get(function() {
   });
 });
 
+// ======================================================
+//   SET VIRTUALS TO TRUE FOR TOJSON/TOLOGJECT
+// ======================================================
+testimonialSchema.set('toJSON', { virtuals: true });
+testimonialSchema.set('toObject', { virtuals: true });
+
+// ======================================================
+//   EXPORT MODEL
+// ======================================================
 module.exports = mongoose.model('Testimonial', testimonialSchema);
