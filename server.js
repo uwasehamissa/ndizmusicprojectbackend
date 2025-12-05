@@ -8,6 +8,7 @@ const authRoutes = require("./routes/authRoutes");
 const bookingRoutes = require("./routes/bookingRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const testimonialRoutes = require("./routes/testimonialRoutes");
+const courseRoutes = require('./routes/courseRoutes');
 const { testEmailConfig } = require("./emails/sendEmail");
 
 const app = express();
@@ -103,6 +104,7 @@ app.use("/api/users", authRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/testimonials", testimonialRoutes);
+app.use('/api/courses', courseRoutes);
 // Health check endpoint
 app.get("/health", (req, res) => {
   const dbState = mongoose.connection.readyState;
