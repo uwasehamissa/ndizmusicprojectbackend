@@ -10,8 +10,8 @@
 // const testimonialRoutes = require("./routes/testimonialRoutes");
 // const courseRoutes = require('./routes/courseRoutes');
 // const subscriptionRoutes = require('./routes/subscriptionRoutes');
-const heroRoutes = require('./routes/heroRoutes');
-const contactRoutes = require('./routes/contactRoutes');
+// const heroRoutes = require('./routes/heroRoutes');
+// const contactRoutes = require('./routes/contactRoutes');
 // const { testEmailConfig } = require("./emails/sendEmail");
 
 // const app = express();
