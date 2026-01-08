@@ -9,6 +9,8 @@ const bookingRoutes = require("./routes/bookingRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const testimonialRoutes = require("./routes/testimonialRoutes");
 const courseRoutes = require('./routes/courseRoutes');
+const subscriptionRoutes = require('./routes/subscriptionRoutes');
+const heroRoutes = require('./routes/heroRoutes');
 const { testEmailConfig } = require("./emails/sendEmail");
 
 const app = express();
@@ -69,7 +71,7 @@ const connectDB = async () => {
 // Test email configuration on startup
 const testEmailOnStartup = async () => {
   try {
-    if (process.env.SMTP_EMAIL && process.env.SMTP_PASSWORD) {
+    if (process.env.SMTP_EMAIL && process.env.SMTP_PASS) {
       await testEmailConfig();
       console.log("✅ Email configuration test passed");
     } else {
@@ -91,7 +93,7 @@ app.use(express.urlencoded({ extended: true }));
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  max: 10000, // Limit each IP to 100 requests per windowMs
   message: {
     success: false,
     message: "Too many requests from this IP, please try again later.",
@@ -105,6 +107,8 @@ app.use("/api/bookings", bookingRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/testimonials", testimonialRoutes);
 app.use('/api/courses', courseRoutes);
+app.use('/newsletter', subscriptionRoutes);
+app.use('/herobooking', heroRoutes);
 // Health check endpoint
 app.get("/health", (req, res) => {
   const dbState = mongoose.connection.readyState;
