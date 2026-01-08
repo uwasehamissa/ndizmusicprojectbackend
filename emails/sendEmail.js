@@ -1061,8 +1061,8 @@ const createTransporter = () => {
   return nodemailer.createTransport({
     service: process.env.SMTP_SERVICE || 'gmail',
     auth: {
-      user: process.env.SMTP_EMAIL || process.env.EMAIL_FROM,
-      pass: process.env.SMTP_PASSWORD
+      user: process.env.SMTP_EMAIL,
+      pass: process.env.SMTP_PASS
     }
   });
 };

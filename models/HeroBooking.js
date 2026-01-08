@@ -53,11 +53,7 @@ const bookingSchema = new mongoose.Schema({
     },
     index: true
   },
-  notes: {
-    type: String,
-    maxlength: [500, 'Notes cannot exceed 500 characters'],
-    default: ''
-  },
+
   emailSent: {
     type: Boolean,
     default: false

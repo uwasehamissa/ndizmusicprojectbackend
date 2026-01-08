@@ -21,7 +21,7 @@ class BookingController {
   // Create a new booking with email notifications
   async createBooking(req, res) {
     try {
-      const { name, email, phone, instrument, experience, notes, lessonDate } = req.body;
+      const { name, email, phone, instrument, experience, lessonDate } = req.body;
 
       // Create new booking
       const booking = new Booking({
@@ -30,7 +30,7 @@ class BookingController {
         phone,
         instrument,
         experience,
-        notes: notes || '',
+      
         lessonDate: lessonDate ? new Date(lessonDate) : undefined
       });
 
