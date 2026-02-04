@@ -1062,7 +1062,7 @@ const createTransporter = () => {
     service: process.env.SMTP_SERVICE || 'gmail',
     auth: {
       user: process.env.SMTP_EMAIL,
-      pass: process.env.SMTP_PASS
+      pass: process.env.SMTP_PASSWORD
     }
   });
 };
