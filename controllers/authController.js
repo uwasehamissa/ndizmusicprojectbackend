@@ -654,17 +654,54 @@ exports.register = async (req, res) => {
 };
 
 // LOGIN
-exports.login = async (req, res) => {
+// exports.login = async (req, res) => {
+//   try {
+//     const { email, password } = req.body;
+
+//     const user = await User.findOne({ email }).select("+password");
+//     if (!user || !(await user.comparePassword(password)))
+//       return res.status(401).json({ error: "Invalid email or password" });
+
+//     const ip = getClientIp(req);
+//     user.lastLogin = new Date();
+//     user.lastLoginIp = ip;
+//     await user.save({ validateBeforeSave: false });
+
+//     sendLoginNotificationEmail(
+//       user.email,
+//       user.name,
+//       ip,
+//       new Date().toLocaleString(),
+//       user.status,
+//     ).catch(() => {});
+
+//     res.status(200).json({
+//       success: true,
+//       message: "Login successful",
+//       token: generateToken(user._id),
+//       status: user.status,
+//       data: user,
+//     });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// };
+
+exports.login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
     const user = await User.findOne({ email }).select("+password");
-    if (!user || !(await user.comparePassword(password)))
+
+    if (!user || !(await user.comparePassword(password))) {
       return res.status(401).json({ error: "Invalid email or password" });
+    }
 
     const ip = getClientIp(req);
+
     user.lastLogin = new Date();
     user.lastLoginIp = ip;
+
     await user.save({ validateBeforeSave: false });
 
     sendLoginNotificationEmail(
@@ -672,7 +709,7 @@ exports.login = async (req, res) => {
       user.name,
       ip,
       new Date().toLocaleString(),
-      user.status,
+      user.status
     ).catch(() => {});
 
     res.status(200).json({
@@ -682,10 +719,12 @@ exports.login = async (req, res) => {
       status: user.status,
       data: user,
     });
+
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    next(err); // ✅ Forward error to Express error handler
   }
 };
+
 
 // LOGOUT
 exports.logout = async (_req, res) => {
