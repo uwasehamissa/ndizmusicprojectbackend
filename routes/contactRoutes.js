@@ -199,6 +199,8 @@ router.get(
   ],
   contactController.getAllContacts
 );
+router.get("/email/:email", contactController.getContactsByEmail);
+
 
 router.patch(
   '/contacts/:id/status',
