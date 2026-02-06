@@ -200,7 +200,7 @@ router.get(
   contactController.getAllContacts
 );
 router.get("/email/:email", contactController.getContactsByEmail);
-
+router.delete("/:id", contactController.deleteContact);
 
 router.patch(
   '/contacts/:id/status',

@@ -691,6 +691,35 @@ const contactController = {
       });
     }
   },
+  // DELETE /api/contacts/:id
+async deleteContact(req, res) {
+  try {
+    const { id } = req.params;
+
+    const contact = await Contact.findByIdAndDelete(id);
+
+    if (!contact) {
+      return res.status(404).json({
+        success: false,
+        message: "Contact not found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Contact deleted successfully",
+      data: contact,
+    });
+  } catch (error) {
+    console.error("Delete contact error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to delete contact",
+    });
+  }
+}
+,
   async getAllContacts(req, res) {
     try {
       const { page = 1, limit = 10, status, search } = req.query;

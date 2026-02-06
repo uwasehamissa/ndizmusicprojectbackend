@@ -727,9 +727,21 @@ exports.login = async (req, res, next) => {
 
 
 // LOGOUT
-exports.logout = async (_req, res) => {
-  res.status(200).json({ success: true, message: "Logged out successfully" });
+// exports.logout = async (_req, res) => {
+//   res.status(200).json({ success: true, message: "Logged out successfully" });
+// };
+
+exports.logout = async (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      console.error("Logout error:", err);
+      return res.status(500).json({ success: false, message: "Logout failed" });
+    }
+    res.clearCookie("connect.sid"); // session cookie name
+    res.status(200).json({ success: true, message: "Logged out successfully" });
+  });
 };
+
 
 // VERIFY EMAIL
 exports.verifyEmail = async (req, res) => {
